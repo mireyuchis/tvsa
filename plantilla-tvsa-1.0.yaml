@@ -1,0 +1,1753 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Parameters
+  TrustedNetworkCidr:
+    Type: String
+    Default: 200.57.75.33/32
+  VpcCidr:
+    Type: String
+    Default: 10.203.0.0/16
+  SshKeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+  ImageId:
+    Type: String
+    Default: ami-cd0f5cb6
+  InstanceType:
+    Type: String
+    Default: t2.medium
+  SSLCertArn:
+    Type: String
+    Default: "arn:aws:acm:us-east-1:528662748254:certificate/6e8c5e1c-d637-477a-abc5-f7230d5f1a6c"
+  HostedZoneId:
+    Type: String
+    Default: Z1T02HEH5XEFSN
+  NodeType:
+    Type: String
+    AllowedValues:
+      - db.t2.medium 
+      - db.r3.large
+      - db.r3.xlarge
+      - db.r3.2xlarge
+      - db.r3.4xlarge
+      - db.r3.8xlarge
+      - db.m4.large
+      - db.m4.xlarge
+      - db.m4.2xlarge
+      - db.m4.4xlarge
+      - db.m4.10xlarge
+  DesiredCapacity:
+    Type: Number
+    Default: '1'
+    Description: Number of instances to launch in your ECS cluster.
+  MaxSize:
+    Type: Number
+    Default: '1'
+    Description: Maximum number of instances that can be launched in your ECS cluster.
+  InstanceType:
+    Description: EC2 instance type
+    Type: String
+    Default: t2.micro
+    AllowedValues: [t2.micro, t2.small, t2.medium, t2.large, m3.medium, m3.large,
+      m3.xlarge, m3.2xlarge, m4.large, m4.xlarge, m4.2xlarge, m4.4xlarge, m4.10xlarge,
+      c4.large, c4.xlarge, c4.2xlarge, c4.4xlarge, c4.8xlarge, c3.large, c3.xlarge,
+      c3.2xlarge, c3.4xlarge, c3.8xlarge, r3.large, r3.xlarge, r3.2xlarge, r3.4xlarge,
+      r3.8xlarge, i2.xlarge, i2.2xlarge, i2.4xlarge, i2.8xlarge]
+    ConstraintDescription: Please choose a valid instance type.
+  MasterUsername:
+    Type: String
+    MinLength: 4
+    MaxLength: 10
+  MasterUserPassword:
+    Type: String
+    MinLength: 8
+    MaxLength: 28
+  InternalHostedZoneName:
+    Type: String
+    Default: tvsa-devops.internal
+
+Mappings:
+  AWSRegionToAMI:
+    us-east-1:
+      AMIID: ami-eca289fb
+    us-east-2:
+      AMIID: ami-446f3521
+    us-west-1:
+      AMIID: ami-9fadf8ff
+    us-west-2:
+      AMIID: ami-7abc111a
+    eu-west-1:
+      AMIID: ami-a1491ad2
+    eu-central-1:
+      AMIID: ami-54f5303b
+    ap-northeast-1:
+      AMIID: ami-9cd57ffd
+    ap-southeast-1:
+      AMIID: ami-a900a3ca
+    ap-southeast-2:
+      AMIID: ami-5781be34
+
+Resources:
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr  
+      InstanceTenancy: default
+      EnableDnsSupport: 'true'
+      EnableDnsHostnames: 'true'
+      Tags:
+      - Key: Name
+        Value: Vpc-infraestructure
+          
+  PublicASubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      CidrBlock: !Join [".",[!Select [0, !Split [".", !Ref VpcCidr]], !Select [1, !Split [".", !Ref VpcCidr]], "10.0/24" ] ]
+      AvailabilityZone:
+        Fn::Select:
+          - 0
+          - Fn::GetAZs: !Ref AWS::Region
+      VpcId:
+        Ref: Vpc
+      Tags:
+      - Key: Name
+        Value: Vpc-infraestructure-public-a
+
+  PublicBSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      CidrBlock: !Join [".",[!Select [0, !Split [".", !Ref VpcCidr]], !Select [1, !Split [".", !Ref VpcCidr]], "11.0/24" ] ]
+      AvailabilityZone:
+        Fn::Select:
+          - 1
+          - Fn::GetAZs: !Ref AWS::Region
+      VpcId:
+        Ref: Vpc
+      Tags:
+      - Key: Name
+        Value: Vpc-infraestructure-public-b
+          
+  DatabaseASubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      CidrBlock: !Join [".",[!Select [0, !Split [".", !Ref VpcCidr]], !Select [1, !Split [".", !Ref VpcCidr]], "200.0/24" ] ]
+      AvailabilityZone:
+        Fn::Select:
+          - 0
+          - Fn::GetAZs: !Ref AWS::Region
+      VpcId:
+        Ref: Vpc
+      Tags:
+      - Key: Name
+        Value: Vpc-infraestructure-database-a
+
+  DatabaseBSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      CidrBlock: !Join [".",[!Select [0, !Split [".", !Ref VpcCidr]], !Select [1, !Split [".", !Ref VpcCidr]], "201.0/24" ] ]
+      AvailabilityZone:
+        Fn::Select:
+          - 1
+          - Fn::GetAZs: !Ref AWS::Region
+      VpcId:
+        Ref: Vpc
+      Tags:
+      - Key: Name
+        Value: Vpc-infraestructure-database-b
+
+  VpcIgw:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+      - Key: Name
+        Value: Vpc-infraestructure-Igw
+
+  NatGwElasticIp01:
+    Type: "AWS::EC2::EIP"
+    Properties:
+      Domain: vpc
+    DependsOn: IgwVpcAssociation
+
+  NatGwElasticIp02:
+    Type: "AWS::EC2::EIP"
+    Properties:
+      Domain: vpc
+    DependsOn: IgwVpcAssociation
+
+  NatGwPublicA:
+    Type: AWS::EC2::NatGateway
+    Properties:
+       AllocationId:
+        Fn::GetAtt:
+          - NatGwElasticIp01
+          - AllocationId
+       SubnetId:
+         Ref: PublicASubnet
+
+  NatGwPublicB:
+    Type: AWS::EC2::NatGateway
+    Properties:
+       AllocationId:
+        Fn::GetAtt:
+          - NatGwElasticIp02
+          - AllocationId
+       SubnetId:
+         Ref: PublicBSubnet
+
+  DhcpOptions:
+    Type: AWS::EC2::DHCPOptions
+    Properties:
+      DomainName: "ec2.internal"
+      DomainNameServers:
+      - AmazonProvidedDNS
+
+  DefaultAcl:
+    Type: AWS::EC2::NetworkAcl
+    Properties:
+      VpcId:
+        Ref: Vpc
+      Tags:
+      - Key: Name
+        Value: Vpc-infraestructure-default
+
+  PublicAcl:
+    Type: AWS::EC2::NetworkAcl
+    Properties:
+      VpcId:
+        Ref: Vpc
+      Tags:
+      - Key: Name
+        Value: Vpc-infraestructure-public
+
+  DatabaseAcl:
+    Type: AWS::EC2::NetworkAcl
+    Properties:
+      VpcId:
+        Ref: Vpc
+      Tags:
+      - Key: Name
+        Value: Vpc-infraestructure-db
+
+
+  PublicAAclAssociation:
+    Type: AWS::EC2::SubnetNetworkAclAssociation
+    Properties:
+      NetworkAclId:
+        Ref: PublicAcl
+      SubnetId:
+        Ref: PublicASubnet
+
+        
+  PublicBAclAssociation:
+    Type: AWS::EC2::SubnetNetworkAclAssociation
+    Properties:
+      NetworkAclId:
+        Ref: PublicAcl
+      SubnetId:
+        Ref: PublicBSubnet
+
+
+  DatabaseAAclAssociation:
+    Type: AWS::EC2::SubnetNetworkAclAssociation
+    Properties:
+      NetworkAclId:
+        Ref: DatabaseAcl
+      SubnetId:
+        Ref: DatabaseASubnet
+
+  DatabaseBAclAssociation:
+    Type: AWS::EC2::SubnetNetworkAclAssociation
+    Properties:
+      NetworkAclId:
+        Ref: DatabaseAcl
+      SubnetId:
+        Ref: DatabaseBSubnet
+
+
+  PublicAclRuleEgress001:
+    Type: "AWS::EC2::NetworkAclEntry"
+    Properties:
+      CidrBlock: 0.0.0.0/0
+      Egress: true
+      NetworkAclId:
+        Ref: PublicAcl
+      Protocol: -1
+      RuleAction : allow
+      RuleNumber : 1
+
+  PublicAclRuleIngress001:
+    Type: "AWS::EC2::NetworkAclEntry"
+    Properties:
+      CidrBlock: 0.0.0.0/0
+      Egress: false
+      NetworkAclId:
+        Ref: PublicAcl
+      Protocol: -1
+      RuleAction : allow
+      RuleNumber : 1
+
+  DatabaseAclRuleEgress001:
+    Type: "AWS::EC2::NetworkAclEntry"
+    Properties:
+      CidrBlock: 0.0.0.0/0
+      Egress: true
+      NetworkAclId:
+        Ref: DatabaseAcl
+      Protocol: -1
+      RuleAction : allow
+      RuleNumber : 1
+
+  DatabaseAclRuleIngress001:
+    Type: "AWS::EC2::NetworkAclEntry"
+    Properties:
+      CidrBlock: 0.0.0.0/0
+      Egress: false
+      NetworkAclId:
+        Ref: DatabaseAcl
+      Protocol: -1
+      RuleAction : allow
+      RuleNumber : 1
+
+  DefaultAclRuleEgress001:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      CidrBlock: 0.0.0.0/0
+      Egress: 'true'
+      Protocol: '-1'
+      RuleAction: allow
+      RuleNumber: '100'
+      NetworkAclId:
+        Ref: DefaultAcl
+
+  DefaultAclRuleIngress001:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      CidrBlock: 0.0.0.0/0
+      Protocol: '-1'
+      RuleAction: allow
+      RuleNumber: '100'
+      NetworkAclId:
+        Ref: DefaultAcl
+          
+  PublicARoutingTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId:
+        Ref: Vpc
+      Tags:
+      - Key: Name
+        Value: Vpc-infraestructure-public
+
+  PublicBRoutingTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId:
+        Ref: Vpc
+      Tags:
+      - Key: Name
+        Value: Vpc-infraestructure-public
+
+
+  DefaultRoutingTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId:
+        Ref: Vpc
+      Tags:
+      - Key: Name
+        Value: Vpc-default
+
+  DatabaseRoutingTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId:
+        Ref: Vpc
+      Tags:
+      - Key: Name
+        Value: Vpc-infraestructure-db
+
+  IgwVpcAssociation:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId:
+        Ref: Vpc
+      InternetGatewayId:
+        Ref: VpcIgw
+
+
+  PublicARoutingSubnetAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId:
+        Ref: PublicARoutingTable
+      SubnetId:
+        Ref: PublicASubnet
+
+  PublicBRoutingSubnetAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId:
+        Ref: PublicBRoutingTable
+      SubnetId:
+        Ref: PublicBSubnet
+
+  DatabaseARoutingSubnetAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId:
+        Ref: DatabaseRoutingTable
+      SubnetId:
+        Ref: DatabaseASubnet
+
+  DatabaseBRoutingSubnetAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId:
+        Ref: DatabaseRoutingTable
+      SubnetId:
+        Ref: DatabaseBSubnet
+
+  PublicARoutingTableRoute001:
+    Type: AWS::EC2::Route
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      RouteTableId:
+        Ref: PublicARoutingTable
+      GatewayId:
+        Ref: VpcIgw
+    DependsOn: IgwVpcAssociation
+
+  PublicBRoutingTableRoute001:
+    Type: AWS::EC2::Route
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      RouteTableId:
+        Ref: PublicBRoutingTable
+      GatewayId:
+        Ref: VpcIgw
+    DependsOn: IgwVpcAssociation
+
+  DefaultRoutingTableRoute001:
+    Type: AWS::EC2::Route
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      RouteTableId:
+        Ref: DefaultRoutingTable
+      GatewayId:
+        Ref: VpcIgw
+    DependsOn: IgwVpcAssociation
+
+  DhcpOptionsVpcAssociation:
+    Type: AWS::EC2::VPCDHCPOptionsAssociation
+    Properties:
+      VpcId:
+        Ref: Vpc
+      DhcpOptionsId:
+        Ref: DhcpOptions
+
+  PGSQLSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: PGSQL cluster instance security group
+      VpcId:
+        Ref: Vpc
+      Tags:
+      - Key: Name
+        Value: Vpc-infraestructure-PGSQL
+
+  PGSQLSecurityGroupIngress001:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId:
+        Ref: PGSQLSecurityGroup
+      IpProtocol: '-1'
+      CidrIp: !Ref VpcCidr 
+
+  PGSQLSecurityGroupEgress002:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId:
+        Ref: PGSQLSecurityGroup
+      IpProtocol: '-1'
+      CidrIp: !Ref VpcCidr 
+
+  FeAppSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Web Fe App Security group for application servers
+      VpcId:
+        Ref: Vpc
+
+  FeAppSecurityGroupHTTPinbound:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref 'FeAppSecurityGroup'
+      IpProtocol: tcp
+      FromPort: '8080'
+      ToPort: '8080'
+      CidrIp: 0.0.0.0/0
+
+  FeAppSecurityGroupSSHinbound:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref 'FeAppSecurityGroup'
+      IpProtocol: tcp
+      FromPort: '22'
+      ToPort: '22'
+      CidrIp: 0.0.0.0/0
+
+  VmhAppSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Web Fe App Security group for application servers
+      VpcId:
+        Ref: Vpc
+
+  VmhAppSecurityGroupHTTPinbound:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref 'VmhAppSecurityGroup'
+      IpProtocol: tcp
+      FromPort: '80'
+      ToPort: '80'
+      CidrIp: 0.0.0.0/0
+
+  VmhAppSecurityGroupSSHinbound:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref 'VmhAppSecurityGroup'
+      IpProtocol: tcp
+      FromPort: '22'
+      ToPort: '22'
+      CidrIp: !Ref TrustedNetworkCidr
+
+
+  FeAppELBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: ECS App Security Group, allows Target Groups to connect to Container
+      VpcId:
+        Ref: Vpc
+
+  FeAppSecurityGroupHTTPSinbound:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref 'FeAppELBSecurityGroup'
+      IpProtocol: tcp
+      FromPort: '443'
+      ToPort: '443'
+      CidrIp: 0.0.0.0/0
+
+  FeAppSecurityGroupHTTPinbound:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref 'FeAppELBSecurityGroup'
+      IpProtocol: tcp
+      FromPort: '80'
+      ToPort: '80'
+      CidrIp: 0.0.0.0/0
+
+  VmhAppELBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: ECS App Security Group, allows Target Groups to connect to Container
+      VpcId:
+        Ref: Vpc
+
+  VmhELBSecurityGroupHTTPSinbound:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref 'VmhAppELBSecurityGroup'
+      IpProtocol: tcp
+      FromPort: '443'
+      ToPort: '443'
+      CidrIp: 0.0.0.0/0
+
+  VmhELBSecurityGroupHTTPinbound:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref 'VmhAppELBSecurityGroup'
+      IpProtocol: tcp
+      FromPort: '80'
+      ToPort: '80'
+      CidrIp: 0.0.0.0/0
+
+  FeElasticLoadBalancer:
+    Type: AWS::ElasticLoadBalancing::LoadBalancer
+    Properties:
+      Scheme: internet-facing
+      Instances:
+        - Ref: FeEc2Instance
+      Subnets:
+        - Ref: PublicASubnet
+        - Ref: PublicBSubnet
+      SecurityGroups:
+        - Ref: FeAppELBSecurityGroup 
+      Listeners:
+      - LoadBalancerPort: '80'
+        InstancePort: '8080'
+        Protocol: HTTP
+      - LoadBalancerPort: '443'
+        InstancePort: '8080'
+        Protocol: HTTPS
+        SSLCertificateId: !Ref SSLCertArn
+      HealthCheck:
+        Target: TCP:8080
+        HealthyThreshold: '3'
+        UnhealthyThreshold: '5'
+        Interval: '30'
+        Timeout: '5'
+
+  VmhElasticLoadBalancer:
+    Type: AWS::ElasticLoadBalancing::LoadBalancer
+    Properties:
+      Scheme: internet-facing
+      Instances:
+        - Ref: VmhEc2Instance
+      Subnets:
+        - Ref: PublicASubnet
+        - Ref: PublicBSubnet
+      SecurityGroups:
+        - Ref: FeAppELBSecurityGroup 
+      Listeners:
+      - LoadBalancerPort: '80'
+        InstancePort: '80'
+        Protocol: HTTP
+      - LoadBalancerPort: '443'
+        InstancePort: '80'
+        Protocol: HTTPS
+        SSLCertificateId: !Ref SSLCertArn
+      HealthCheck:
+        Target: TCP:80
+        HealthyThreshold: '3'
+        UnhealthyThreshold: '5'
+        Interval: '30'
+        Timeout: '5'
+
+  FeAppSecurityGroupHTTPSinbound:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref 'FeAppELBSecurityGroup'
+      IpProtocol: tcp
+      FromPort: '443'
+      ToPort: '443'
+      CidrIp: 0.0.0.0/0
+
+  FeAppSecurityGroupHTTPinbound:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref 'FeAppELBSecurityGroup'
+      IpProtocol: tcp
+      FromPort: '80'
+      ToPort: '80'
+      CidrIp: 0.0.0.0/0
+
+  FeElasticLoadBalancer:
+    Type: AWS::ElasticLoadBalancing::LoadBalancer
+    Properties:
+      Scheme: internet-facing
+      Instances:
+        - Ref: FeEc2Instance
+      Subnets:
+        - Ref: PublicASubnet
+        - Ref: PublicBSubnet
+      SecurityGroups:
+        - Ref: FeAppELBSecurityGroup 
+      Listeners:
+      - LoadBalancerPort: '80'
+        InstancePort: '8080'
+        Protocol: HTTP
+      - LoadBalancerPort: '443'
+        InstancePort: '8080'
+        Protocol: HTTPS
+        SSLCertificateId: !Ref SSLCertArn
+      HealthCheck:
+        Target: TCP:8080
+        HealthyThreshold: '3'
+        UnhealthyThreshold: '5'
+        Interval: '30'
+        Timeout: '5'
+
+  FeElbDNSRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: dev-fe-elb.televisa-devops.com 
+      Type: CNAME
+      TTL: '300'
+      ResourceRecords:
+        - !GetAtt FeElasticLoadBalancer.DNSName
+
+  VmhElbDNSRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: dev-vmh-elb.televisa-devops.com 
+      Type: CNAME
+      TTL: '300'
+      ResourceRecords:
+        - !GetAtt VmhElasticLoadBalancer.DNSName
+
+  FeEc2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      KeyName: !Ref SshKeyName
+      ImageId: !Ref ImageId
+      InstanceType: !Ref InstanceType
+      NetworkInterfaces:
+        - AssociatePublicIpAddress: "true"
+          DeviceIndex: "0"
+          GroupSet:
+            - Ref: FeAppSecurityGroup
+          SubnetId:
+            Ref: PublicBSubnet
+      
+  VmhEc2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      KeyName: !Ref SshKeyName
+      ImageId: !Ref ImageId
+      InstanceType: !Ref InstanceType
+      NetworkInterfaces:
+        - AssociatePublicIpAddress: "true"
+          DeviceIndex: "0"
+          GroupSet:
+            - Ref: VmhAppSecurityGroup
+          SubnetId:
+            Ref: PublicBSubnet
+      Tags:
+        -
+          Key: Name
+          Value: VmhEc2DemoInstance
+
+  DatabaseCluster:
+    Type: "AWS::RDS::DBInstance"
+    Properties:
+      AllowMajorVersionUpgrade: false
+      AutoMinorVersionUpgrade: false
+      MultiAZ: true
+      DBInstanceClass:
+        Ref: NodeType
+      DBParameterGroupName:
+        Ref: ProdDBParameterGroup
+      StorageEncrypted: true
+      BackupRetentionPeriod: 30
+      DBSubnetGroupName:
+        Ref: DatabaseClusterSubnetGroup
+      Engine: postgres
+      EngineVersion: 9.6.1
+      MasterUsername:
+        Ref: MasterUsername
+      MasterUserPassword:
+        Ref: MasterUserPassword
+      Port: 5432
+      AllocatedStorage: 128
+      PreferredBackupWindow: 06:00-08:00
+      PreferredMaintenanceWindow: Tue:08:00-Tue:10:00
+      VPCSecurityGroups:
+        - Ref: PGSQLSecurityGroup
+
+  ProdDBParameterGroup:
+    Type: AWS::RDS::DBParameterGroup
+    Properties:
+      Parameters:
+        log_rotation_age: 60
+      Description: Parameter group for omni production db servers
+      Family: postgres9.6
+
+  DatabaseClusterSubnetGroup:
+    Type: "AWS::RDS::DBSubnetGroup"
+    Properties:
+      DBSubnetGroupDescription: aurora subnet group
+      SubnetIds:
+        - Ref: DatabaseASubnet
+        - Ref: DatabaseBSubnet
+
+  DbClusterDNSRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      Name: db.tvsa-devops.internal
+      HostedZoneId: !Ref InternalHostedZone
+      Type: CNAME
+      TTL: '300'
+      ResourceRecords:
+        - !GetAtt DatabaseCluster.Endpoint.Address
+    
+  VmhDNSRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: dev-vmh.televisa-devops.com
+      Type: CNAME
+      TTL: '300'
+      ResourceRecords:
+        - !GetAtt VmhEc2Instance.PublicDnsName
+
+  FeDNSRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: dev-fe.televisa-devops.com
+      Type: CNAME
+      TTL: '300'
+      ResourceRecords:
+        - !GetAtt FeEc2Instance.PublicDnsName
+
+  InternalHostedZone:
+    Type: "AWS::Route53::HostedZone"
+    Properties:
+      Name: !Ref InternalHostedZoneName
+      VPCs:
+        -
+          VPCId:
+            Ref: Vpc
+          VPCRegion:
+            Ref: "AWS::Region" 
+ 
+  VmhMetadataIn:
+    Type: 'AWS::Kinesis::Stream'
+    Properties:
+      Name: "DevVmhMetadataIn"
+      RetentionPeriodHours: 24
+      ShardCount: 1
+  VmhMetadataInBulk:
+    Type: 'AWS::Kinesis::Stream'
+    Properties:
+      Name: "DevVmhMetadataInBulk"
+      RetentionPeriodHours: 24
+      ShardCount: 1
+    DependsOn: VmhMetadataIn
+  VmhMetadataOutBrighspot:
+    Type: 'AWS::Kinesis::Stream'
+    Properties:
+      Name: !Sub "DevVmhMetadataOutBrighspot"
+      RetentionPeriodHours: 24
+      ShardCount: 1
+    DependsOn: VmhMetadataInBulk
+  VmhMetadataOutBrightspotBulk:
+    Type: 'AWS::Kinesis::Stream'
+    Properties:
+      Name: !Sub "DevVmhMetadataOutBrightspotBulk"
+      RetentionPeriodHours: 24
+      ShardCount: 1
+    DependsOn: VmhMetadataOutBrighspot
+  VmhMetadataOutKinja:
+    Type: 'AWS::Kinesis::Stream'
+    Properties:
+      Name: !Sub "DevVmhMetadataOutKinja"
+      RetentionPeriodHours: 24
+      ShardCount: 1
+    DependsOn: VmhMetadataOutBrightspotBulk
+  VmhMetadataOutWordpress:
+    Type: 'AWS::Kinesis::Stream'
+    Properties:
+      Name: !Sub "DevVmhMetadataOutWordpress"
+      RetentionPeriodHours: 24
+      ShardCount: 1
+    DependsOn: VmhMetadataOutKinja
+  VmhLocalMetadataOutBrightspot:
+    Type: 'AWS::Kinesis::Stream'
+    Properties:
+      Name: !Sub "DevVmhLocalMetadataOutBrightspot"
+      RetentionPeriodHours: 24
+      ShardCount: 1
+    DependsOn: VmhMetadataOutWordpress
+  VmhApiGateway:
+    Type: "AWS::ApiGateway::RestApi"
+    Properties:
+      Name: VMH API Gateway
+      Description: API for VMH
+      Body:
+        swagger: "2.0"
+        info:
+          version: "2017-06-02T13:11:45Z"
+          title: "VMH-API-Gateway"
+        #you need to change the host name!
+        host: "api.vmh.dev.y.univision.com"
+        schemes:
+        - "https"
+        paths:
+          /metadata/v1/content/search:
+            get:
+              produces:
+              - "application/json"
+              parameters:
+              - name: "supplier"    
+                in: "query"
+                required: false
+                type: "string"
+              - name: "endDate"
+                in: "query"
+                required: false
+                type: "string"
+              - name: "network"
+                in: "query"
+                required: false
+                type: "string"
+              - name: "startDate"
+                in: "query"
+                required: false
+                type: "string"
+              - name: "size"
+                in: "query"
+                required: false
+                type: "string"
+              - name: "videoPage"
+                in: "query"
+                required: false
+                type: "string"
+              - name: "keywords"
+                in: "query"
+                required: false
+                type: "string"
+              - name: "query"
+                in: "query"
+                required: false
+                type: "string"
+              - name: "sort"
+                in: "query"
+                required: false
+                type: "string"
+              - name: "company"
+                in: "query"
+                required: false
+                type: "string"
+              - name: "offset"
+                in: "query"
+                required: false
+                type: "string"
+              - name: "identifiers"
+                in: "query"
+                required: false
+                type: "string"
+              - name: "videoType"
+                in: "query"
+                required: false
+                type: "string"
+              responses:
+                '200':
+                  description: "200 response"
+                  headers:
+                    Access-Control-Allow-Origin:
+                      type: "string"
+                '400':
+                  description: "400 response"
+                  headers:
+                    Access-Control-Allow-Origin:
+                      type: "string"
+                '500':
+                  description: "500 response"
+                  headers:
+                    Access-Control-Allow-Origin:
+                     type: "string"
+                '401':
+                  description: "401 response"
+                  headers:
+                    Access-Control-Allow-Origin:
+                      type: "string"
+                '204':
+                  description: "204 response"
+                  headers:
+                    Access-Control-Allow-Origin:
+                      type: "string"
+                '403':
+                  description: "403 response"
+                  headers:
+                    Access-Control-Allow-Origin:
+                      type: "string"
+              security:
+              - api_key: []
+              x-amazon-apigateway-integration:
+                responses:
+                  default:
+                    statusCode: "200"
+                    responseParameters:
+                      method.response.header.Access-Control-Allow-Origin: "'*'"
+                  '400':
+                    statusCode: "400"
+                  '500':
+                    statusCode: "500"
+                  '401':
+                    statusCode: "401"
+                  '204':
+                    statusCode: "204"
+                  '403':
+                    statusCode: "403"
+                requestParameters:
+                  integration.request.querystring.query: "method.request.querystring.query"
+                  integration.request.querystring.supplier: "method.request.querystring.supplier"
+                  integration.request.querystring.videoPage: "method.request.querystring.videoPage"
+                  integration.request.querystring.identifiers: "method.request.querystring.identifiers"
+                  integration.request.querystring.network: "method.request.querystring.network"
+                  integration.request.querystring.keywords: "method.request.querystring.keywords"
+                  integration.request.querystring.endDate: "method.request.querystring.endDate"
+                  integration.request.querystring.company: "method.request.querystring.company"
+                  integration.request.querystring.videoType: "method.request.querystring.videoType"
+                  integration.request.querystring.startDate: "method.request.querystring.startDate"
+                  integration.request.querystring.sort: "method.request.querystring.sort"
+                  integration.request.querystring.offset: "method.request.querystring.offset"
+                  integration.request.querystring.size: "method.request.querystring.size"
+                uri: "http://vmh-dev-metadata-elb-1132107388.us-east-1.elb.amazonaws.com/v1/content/search"
+                passthroughBehavior: "when_no_match"
+                httpMethod: "GET"
+                cacheNamespace: "fxx27e"
+                cacheKeyParameters:
+                - "method.request.querystring.company"
+                - "method.request.querystring.endDate"
+                - "method.request.querystring.identifiers"
+                - "method.request.querystring.keywords"
+                - "method.request.querystring.network"
+                - "method.request.querystring.offset"
+                - "method.request.querystring.query"
+                - "method.request.querystring.size"
+                - "method.request.querystring.sort"
+                - "method.request.querystring.startDate"
+                - "method.request.querystring.supplier"
+                - "method.request.querystring.videoPage"
+                - "method.request.querystring.videoType"
+                - "integration.request.querystring.supplier"
+                - "integration.request.querystring.network"
+                - "integration.request.querystring.company"
+                - "integration.request.querystring.startDate"
+                - "integration.request.querystring.videoType"
+                - "integration.request.querystring.query"
+                - "integration.request.querystring.videoPage"
+                - "integration.request.querystring.identifiers"
+                - "integration.request.querystring.endDate"
+                - "integration.request.querystring.keywords"
+                - "integration.request.querystring.sort"
+                - "integration.request.querystring.offset"
+                - "integration.request.querystring.size"
+                type: "http"
+            options:
+              consumes:
+              - "application/json"
+              produces:
+              - "application/json"
+              responses:
+                '200':
+                  description: "200 response"
+                  schema:
+                    $ref: "#/definitions/Empty"
+                  headers:
+                    Access-Control-Allow-Origin:
+                      type: "string"
+                    Access-Control-Allow-Methods:
+                      type: "string"
+                    Access-Control-Allow-Headers:
+                      type: "string"
+              x-amazon-apigateway-integration:
+                responses:
+                  default:
+                    statusCode: "200"
+                    responseParameters:
+                      method.response.header.Access-Control-Allow-Methods: "'GET,OPTIONS'"
+                      method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+                      method.response.header.Access-Control-Allow-Origin: "'*'"
+                requestTemplates:
+                  application/json: "{\"statusCode\": 200}"
+                passthroughBehavior: "when_no_match"
+                type: "mock"
+          /metadata/v1/content/{externalId}:
+            get:
+              produces:
+              - "application/json"
+              parameters:
+              - name: "externalId"
+                in: "path"
+                required: true
+                type: "string"
+              responses:
+                '200':
+                  description: "200 response"
+                  headers:
+                    Access-Control-Allow-Origin:
+                      type: "string"
+                '400':
+                  description: "400 response"
+                  headers:
+                    Access-Control-Allow-Origin:
+                      type: "string"
+                '500':
+                  description: "500 response"
+                  headers:
+                    Access-Control-Allow-Origin:
+                      type: "string"
+                '401':
+                  description: "401 response"
+                  headers:
+                    Access-Control-Allow-Origin:
+                      type: "string"
+                '204':
+                  description: "204 response"
+                  headers:
+                    Access-Control-Allow-Origin:
+                      type: "string"
+                '403':
+                  description: "403 response"
+                  headers:
+                    Access-Control-Allow-Origin:
+                      type: "string"
+                '404':
+                  description: "404 response"
+                  headers:
+                    Access-Control-Allow-Origin:
+                      type: "string"
+              security:
+              - api_key: []
+              x-amazon-apigateway-integration:
+                responses:
+                  default:
+                    statusCode: "200"
+                    responseParameters:
+                      method.response.header.Access-Control-Allow-Origin: "'*'"
+                  '400':
+                    statusCode: "400"
+                  '500':
+                    statusCode: "500"
+                  '401':
+                    statusCode: "401"
+                  '204':
+                    statusCode: "204"
+                  '403':
+                    statusCode: "403"
+                  '404':
+                    statusCode: "404"
+                requestParameters:
+                  integration.request.path.externalId: "method.request.path.externalId"
+                uri: "http://vmh-dev-metadata-elb-1132107388.us-east-1.elb.amazonaws.com/v1/content/{externalId}"
+                passthroughBehavior: "when_no_match"
+                httpMethod: "GET"
+                cacheNamespace: "my5k2i"
+                cacheKeyParameters:
+                - "method.request.path.externalId"
+                - "integration.request.path.externalId"
+                type: "http"
+            options:
+              consumes:
+              - "application/json"
+              produces:
+              - "application/json"
+              responses:
+                '200':
+                  description: "200 response"
+                  schema:
+                    $ref: "#/definitions/Empty"
+                  headers:
+                    Access-Control-Allow-Origin:
+                      type: "string"
+                    Access-Control-Allow-Methods:
+                      type: "string"
+                    Access-Control-Allow-Headers:
+                      type: "string"
+              x-amazon-apigateway-integration:
+                responses:
+                  default:
+                    statusCode: "200"
+                    responseParameters:
+                      method.response.header.Access-Control-Allow-Methods: "'GET,OPTIONS'"
+                      method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+                      method.response.header.Access-Control-Allow-Origin: "'*'"
+                requestTemplates:
+                  application/json: "{\"statusCode\": 200}"
+                passthroughBehavior: "when_no_match"
+                type: "mock"
+          /profiles/v1/profile:
+            get:
+              produces:
+              - "application/json"
+              responses:
+                '200':
+                  description: "200 response"
+                  schema:
+                    $ref: "#/definitions/Empty"
+                  headers:
+                    Access-Control-Allow-Origin:
+                      type: "string"
+              x-amazon-apigateway-integration:
+                responses:
+                  default:
+                    statusCode: "200"
+                    responseParameters:
+                      method.response.header.Access-Control-Allow-Origin: "'*'"
+                uri: "http://vmh-dev-profile-elb-590224519.us-east-1.elb.amazonaws.com/v1/profile/"
+                passthroughBehavior: "when_no_match"
+                httpMethod: "GET"
+                type: "http"
+            post:
+              produces:
+              - "application/json"
+              parameters:
+              - name: "Authorization"
+                in: "header"
+                required: true
+                type: "string"
+              responses:
+                '200':
+                  description: "200 response"
+                  schema:
+                    $ref: "#/definitions/Empty"
+                  headers:
+                    Access-Control-Allow-Origin:
+                      type: "string"
+              x-amazon-apigateway-integration:
+                responses:
+                  default:
+                    statusCode: "200"
+                    responseParameters:
+                      method.response.header.Access-Control-Allow-Origin: "'*'"
+                requestParameters:
+                  integration.request.header.Authorization: "method.request.header.Authorization"
+                uri: "http://vmh-dev-profile-elb-590224519.us-east-1.elb.amazonaws.com/v1/profile"
+                passthroughBehavior: "when_no_match"
+                httpMethod: "POST"
+                type: "http"
+            options:
+              consumes:
+              - "application/json"
+              produces:
+              - "application/json"
+              responses:
+                '200':
+                  description: "200 response"
+                  schema:
+                    $ref: "#/definitions/Empty"
+                  headers:
+                    Access-Control-Allow-Origin:
+                      type: "string"
+                    Access-Control-Allow-Methods:
+                      type: "string"
+                    Access-Control-Allow-Headers:
+                      type: "string"
+              x-amazon-apigateway-integration:
+                responses:
+                  default:
+                    statusCode: "200"
+                    responseParameters:
+                      method.response.header.Access-Control-Allow-Methods: "'POST,GET,OPTIONS'"
+                      method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+                      method.response.header.Access-Control-Allow-Origin: "'*'"
+                requestTemplates:
+                  application/json: "{\"statusCode\": 200}"
+                passthroughBehavior: "when_no_match"
+                type: "mock"
+          /profiles/v1/profile/{id}:
+            get:
+              produces:
+              - "application/json"
+              parameters:
+              - name: "id"
+                in: "path"
+                required: true
+                type: "string"
+              responses:
+                '200':
+                  description: "200 response"
+                  headers:
+                    Access-Control-Allow-Origin:
+                      type: "string"
+                '400':
+                  description: "400 response"
+                  headers:
+                    Access-Control-Allow-Origin:
+                      type: "string"
+                '500':
+                  description: "500 response"
+                  headers:
+                    Access-Control-Allow-Origin:
+                      type: "string"
+                '401':
+                  description: "401 response"
+                  headers:
+                    Access-Control-Allow-Origin:
+                      type: "string"
+                '204':
+                  description: "204 response"
+                  headers:
+                    Access-Control-Allow-Origin:
+                      type: "string"
+                '403':
+                  description: "403 response"
+                  headers:
+                    Access-Control-Allow-Origin:
+                      type: "string"
+              security:
+              - api_key: []
+              x-amazon-apigateway-integration:
+                responses:
+                  default:
+                    statusCode: "200"
+                    responseParameters:
+                      method.response.header.Access-Control-Allow-Origin: "'*'"
+                  '400':
+                    statusCode: "400"
+                  '500':
+                    statusCode: "500"
+                  '401':
+                    statusCode: "401"
+                  '204':
+                    statusCode: "204"
+                  '403':
+                    statusCode: "403"
+                requestParameters:
+                  integration.request.path.id: "method.request.path.id"
+                uri: "http://vmh-dev-profile-elb-590224519.us-east-1.elb.amazonaws.com/v1/profile/{id}"
+                passthroughBehavior: "when_no_match"
+                httpMethod: "GET"
+                cacheNamespace: "cjs1zi"
+                cacheKeyParameters:
+                - "method.request.path.id"
+                - "integration.request.path.id"
+                type: "http"
+            put:
+              produces:
+              - "application/json"
+              parameters:
+              - name: "Authorization"
+                in: "header"
+                required: true
+                type: "string"
+              - name: "id"
+                in: "path"
+                required: true
+                type: "string"
+              responses:
+                '200':
+                  description: "200 response"
+                  schema:
+                    $ref: "#/definitions/Empty"
+                  headers:
+                    Access-Control-Allow-Origin:
+                      type: "string"
+              security:
+              - api_key: []
+              x-amazon-apigateway-integration:
+                responses:
+                  default:
+                    statusCode: "200"
+                    responseParameters:
+                      method.response.header.Access-Control-Allow-Origin: "'*'"
+                requestParameters:
+                  integration.request.header.Authorization: "method.request.header.Authorization"
+                  integration.request.path.id: "method.request.path.id"
+                uri: "http://vmh-dev-profile-elb-590224519.us-east-1.elb.amazonaws.com/v1/profile/{id}"
+                passthroughBehavior: "when_no_match"
+                httpMethod: "PUT"
+                type: "http"
+            delete:
+              produces:
+              - "application/json"
+              parameters:
+              - name: "Authorization"
+                in: "header"
+                required: true
+                type: "string"
+              - name: "id"
+                in: "path"
+                required: true
+                type: "string"
+              responses:
+                '200':
+                  description: "200 response"
+                  schema:
+                    $ref: "#/definitions/Empty"
+                  headers:
+                    Access-Control-Allow-Origin:
+                      type: "string"
+              security:
+              - api_key: []
+              x-amazon-apigateway-integration:
+                responses:
+                  default:
+                    statusCode: "200"
+                    responseParameters:
+                      method.response.header.Access-Control-Allow-Origin: "'*'"
+                requestParameters:
+                  integration.request.header.Authorization: "method.request.header.Authorization"
+                  integration.request.path.id: "method.request.path.id"
+                uri: "http://vmh-dev-profile-elb-590224519.us-east-1.elb.amazonaws.com/v1/profile/{id}"
+                passthroughBehavior: "when_no_match"
+                httpMethod: "DELETE"
+                type: "http"
+            options:
+              consumes:
+              - "application/json"
+              produces:
+              - "application/json"
+              responses:
+                '200':
+                  description: "200 response"
+                  schema:
+                    $ref: "#/definitions/Empty"
+                  headers:
+                    Access-Control-Allow-Origin:
+                      type: "string"
+                    Access-Control-Allow-Methods:
+                      type: "string"
+                    Access-Control-Allow-Headers:
+                      type: "string"
+              x-amazon-apigateway-integration:
+                responses:
+                  default:
+                    statusCode: "200"
+                    responseParameters:
+                      method.response.header.Access-Control-Allow-Methods: "'DELETE,GET,OPTIONS,PUT'"
+                      method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+                      method.response.header.Access-Control-Allow-Origin: "'*'"
+                requestTemplates:
+                  application/json: "{\"statusCode\": 200}"
+                passthroughBehavior: "when_no_match"
+                type: "mock"
+        securityDefinitions:
+          api_key:
+            type: "apiKey"
+            name: "x-api-key"
+            in: "header"
+        definitions:
+          Empty:
+            type: "object"
+            title: "Empty Schema"
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+  EcsSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: ECS Security Group
+      VpcId: !Ref Vpc
+  EcsSecurityGroupHTTPinbound:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref 'EcsSecurityGroup'
+      IpProtocol: tcp
+      FromPort: '80'
+      ToPort: '80'
+      CidrIp: 0.0.0.0/0
+  EcsSecurityGroupSSHinbound:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref 'EcsSecurityGroup'
+      IpProtocol: tcp
+      FromPort: '22'
+      ToPort: '22'
+      CidrIp: 0.0.0.0/0
+  EcsSecurityGroupALBports:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref 'EcsSecurityGroup'
+      IpProtocol: tcp
+      FromPort: '31000'
+      ToPort: '61000'
+      SourceSecurityGroupId: !Ref 'EcsSecurityGroup'
+  CloudwatchLogsGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Join ['-', [ECSLogGroup, !Ref 'AWS::StackName']]
+      RetentionInDays: 14
+  taskdefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Join ['', [!Ref 'AWS::StackName', -ecs-demo-app]]
+      ContainerDefinitions:
+      - Name: simple-app
+        Cpu: '10'
+        Essential: 'true'
+        Image: httpd:2.4
+        Memory: '300'
+        LogConfiguration:
+          LogDriver: awslogs
+          Options:
+            awslogs-group: !Ref 'CloudwatchLogsGroup'
+            awslogs-region: !Ref 'AWS::Region'
+            awslogs-stream-prefix: ecs-demo-app
+        MountPoints:
+        - ContainerPath: /usr/local/apache2/htdocs
+          SourceVolume: my-vol
+        PortMappings:
+        - ContainerPort: 80
+      - Name: busybox
+        Cpu: 10
+        Command: ['/bin/sh -c "while true; do echo ''<html> <head> <title>Amazon ECS
+            Sample App</title> <style>body {margin-top: 40px; background-color: #333;}
+            </style> </head><body> <div style=color:white;text-align:center> <h1>Amazon
+            ECS Sample App</h1> <h2>Congratulations!</h2> <p>Your application is now
+            running on a container in Amazon ECS.</p>'' > top; /bin/date > date ;
+            echo ''</div></body></html>'' > bottom; cat top date bottom > /usr/local/apache2/htdocs/index.html
+            ; sleep 1; done"']
+        EntryPoint: [sh, -c]
+        Essential: false
+        Image: busybox
+        Memory: 200
+        LogConfiguration:
+          LogDriver: awslogs
+          Options:
+            awslogs-group: !Ref 'CloudwatchLogsGroup'
+            awslogs-region: !Ref 'AWS::Region'
+            awslogs-stream-prefix: ecs-demo-app
+        VolumesFrom:
+        - SourceContainer: simple-app
+      Volumes:
+      - Name: my-vol
+  ECSALB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: ECSALB
+      Scheme: internet-facing
+      LoadBalancerAttributes:
+      - Key: idle_timeout.timeout_seconds
+        Value: '30'
+      Subnets:
+        - Ref: PublicASubnet
+        - Ref: PublicBSubnet
+      SecurityGroups: [!Ref 'EcsSecurityGroup']
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    DependsOn: ECSServiceRole
+    Properties:
+      DefaultActions:
+      - Type: forward
+        TargetGroupArn: !Ref 'ECSTG'
+      LoadBalancerArn: !Ref 'ECSALB'
+      Port: '80'
+      Protocol: HTTP
+  ECSALBListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    DependsOn: ALBListener
+    Properties:
+      Actions:
+      - Type: forward
+        TargetGroupArn: !Ref 'ECSTG'
+      Conditions:
+      - Field: path-pattern
+        Values: [/]
+      ListenerArn: !Ref 'ALBListener'
+      Priority: 1
+  ECSTG:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    DependsOn: ECSALB
+    Properties:
+      HealthCheckIntervalSeconds: 10
+      HealthCheckPath: /
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      Name: ECSTG
+      Port: 80
+      Protocol: HTTP
+      UnhealthyThresholdCount: 2
+      VpcId: !Ref Vpc
+  ECSAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier: Ref PublicBSubnet
+      LaunchConfigurationName: !Ref 'ContainerInstances'
+      MinSize: '1'
+      MaxSize: !Ref 'MaxSize'
+      DesiredCapacity: !Ref 'DesiredCapacity'
+    CreationPolicy:
+      ResourceSignal:
+        Timeout: PT15M
+    UpdatePolicy:
+      AutoScalingReplacingUpdate:
+        WillReplace: 'true'
+  ContainerInstances:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      ImageId: !FindInMap [AWSRegionToAMI, !Ref 'AWS::Region', AMIID]
+      SecurityGroups: [!Ref 'EcsSecurityGroup']
+      InstanceType: !Ref 'InstanceType'
+      IamInstanceProfile: !Ref 'EC2InstanceProfile'
+      KeyName: !Ref 'SshKeyName'
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash -xe
+          echo ECS_CLUSTER=${ECSCluster} >> /etc/ecs/ecs.config
+          yum install -y aws-cfn-bootstrap
+          /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource ECSAutoScalingGroup --region ${AWS::Region}
+  service:
+    Type: AWS::ECS::Service
+    DependsOn: ALBListener
+    Properties:
+      Cluster: !Ref 'ECSCluster'
+      DesiredCount: '1'
+      LoadBalancers:
+      - ContainerName: simple-app
+        ContainerPort: '80'
+        TargetGroupArn: !Ref 'ECSTG'
+      Role: !Ref 'ECSServiceRole'
+      TaskDefinition: !Ref 'taskdefinition'
+  ECSServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: [ecs.amazonaws.com]
+          Action: ['sts:AssumeRole']
+      Path: /
+      Policies:
+      - PolicyName: ecs-service
+        PolicyDocument:
+          Statement:
+          - Effect: Allow
+            Action: ['elasticloadbalancing:DeregisterInstancesFromLoadBalancer', 'elasticloadbalancing:DeregisterTargets',
+              'elasticloadbalancing:Describe*', 'elasticloadbalancing:RegisterInstancesWithLoadBalancer',
+              'elasticloadbalancing:RegisterTargets', 'ec2:Describe*', 'ec2:AuthorizeSecurityGroupIngress']
+            Resource: '*'
+  ServiceScalingTarget:
+    Type: AWS::ApplicationAutoScaling::ScalableTarget
+    DependsOn: service
+    Properties:
+      MaxCapacity: 2
+      MinCapacity: 1
+      ResourceId: !Join ['', [service/, !Ref 'ECSCluster', /, !GetAtt [service, Name]]]
+      RoleARN: !GetAtt [AutoscalingRole, Arn]
+      ScalableDimension: ecs:service:DesiredCount
+      ServiceNamespace: ecs
+  ServiceScalingPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: AStepPolicy
+      PolicyType: StepScaling
+      ScalingTargetId: !Ref 'ServiceScalingTarget'
+      StepScalingPolicyConfiguration:
+        AdjustmentType: PercentChangeInCapacity
+        Cooldown: 60
+        MetricAggregationType: Average
+        StepAdjustments:
+        - MetricIntervalLowerBound: 0
+          ScalingAdjustment: 200
+  ALB500sAlarmScaleUp:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      EvaluationPeriods: '1'
+      Statistic: Average
+      Threshold: '10'
+      AlarmDescription: Alarm if our ALB generates too many HTTP 500s.
+      Period: '60'
+      AlarmActions: [!Ref 'ServiceScalingPolicy']
+      Namespace: AWS/ApplicationELB
+      Dimensions:
+        - Name: LoadBalancer
+          Value: !GetAtt 
+            - ECSALB
+            - LoadBalancerFullName
+      ComparisonOperator: GreaterThanThreshold
+      MetricName: HTTPCode_ELB_5XX_Count
+  EC2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: [ec2.amazonaws.com]
+          Action: ['sts:AssumeRole']
+      Path: /
+      Policies:
+      - PolicyName: ecs-service
+        PolicyDocument:
+          Statement:
+          - Effect: Allow
+            Action: ['ecs:CreateCluster', 'ecs:DeregisterContainerInstance', 'ecs:DiscoverPollEndpoint',
+              'ecs:Poll', 'ecs:RegisterContainerInstance', 'ecs:StartTelemetrySession',
+              'ecs:Submit*', 'logs:CreateLogStream', 'logs:PutLogEvents']
+            Resource: '*'
+  AutoscalingRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: [application-autoscaling.amazonaws.com]
+          Action: ['sts:AssumeRole']
+      Path: /
+      Policies:
+      - PolicyName: service-autoscaling
+        PolicyDocument:
+          Statement:
+          - Effect: Allow
+            Action: ['application-autoscaling:*', 'cloudwatch:DescribeAlarms', 'cloudwatch:PutMetricAlarm',
+              'ecs:DescribeServices', 'ecs:UpdateService']
+            Resource: '*'
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles: [!Ref 'EC2Role']
+Outputs:
+  NetworkVpcId:
+    Description: The ID of the VPC
+    Value: !Ref Vpc
+    Export:
+      Name: !Sub "${AWS::StackName}-NetworkVpcId"
+
+  PublicASubnet:
+    Description: The ID of the PublicASubnet
+    Value: !Ref PublicASubnet
+    Export:
+      Name: !Sub "${AWS::StackName}-PublicASubnet"
+
+  PublicBSubnet:
+    Description: The ID of the PublicBSubnet
+    Value: !Ref PublicBSubnet
+    Export:
+      Name: !Sub "${AWS::StackName}-PublicBSubnet"
+
+  DatabaseASubnet:
+    Description: The ID of the DatabaseASubnet
+    Value: !Ref DatabaseASubnet
+    Export:
+      Name: !Sub "${AWS::StackName}-DatabaseASubnet"
+
+  DatabaseBSubnet:
+    Description: The ID of the DatabaseBSubnet
+    Value: !Ref DatabaseBSubnet
+    Export:
+      Name: !Sub "${AWS::StackName}-DatabaseBSubnet"
+
+  PGSQLSecurityGroup:
+    Description: The ID of the PGSQLSecurityGroup
+    Value: !Ref PGSQLSecurityGroup
+    Export:
+      Name: !Sub "${AWS::StackName}-PGSQLSecurityGroup"
+
+  SshKeyName:
+    Description: The name of the SSH key used in the infra
+    Value: !Ref SshKeyName
+    Export:
+      Name: !Sub "${AWS::StackName}-SshKeyName"
+
+  VmhMetadataInName:
+    Value: !GetAtt VmhMetadataIn.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-VmhMetadataInArn"
+
+  VmhMetadataInBulkName:
+    Value: !GetAtt VmhMetadataInBulk.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-VmhMetadataInBulkArn"
+
+  VmhMetadataOutBrighspotName:
+    Value: !GetAtt VmhMetadataOutBrighspot.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-VmhMetadataOutBrighspotArn"
+
+  VmhMetadataOutBrightspotBulkName:
+    Value: !GetAtt VmhMetadataOutBrightspotBulk.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-VmhMetadataOutBrightspotBulkArn"
+
+  VmhMetadataOutKinjaName:
+    Value: !GetAtt VmhMetadataOutKinja.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-VmhMetadataOutKinjaArn"
+
+  VmhMetadataOutWordpressName:
+    Value: !GetAtt VmhMetadataOutWordpress.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-VmhMetadataOutWordpressArn"
+
+  VmhLocalMetadataOutBrightspotName:
+    Value: !GetAtt VmhLocalMetadataOutBrightspot.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-VmhLocalMetadataOutBrightspotArn"
